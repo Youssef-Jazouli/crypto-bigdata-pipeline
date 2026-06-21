@@ -1,29 +1,39 @@
-import pandas as pd
 import os
+import sys
+import pandas as pd
+import io
 from datetime import datetime
+
+# 🛠️ Configuration du chemin système pour permettre l'importation du module 'utils'
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.minio_client import get_minio_client, upload_bytes_to_minio
 
 def transform_bronze_to_silver():
     """
-    Étape 2 : Lecture du JSON brut depuis la couche Bronze,
-    Nettoyage, normalisation avec Pandas et sauvegarde au format Parquet (Silver Layer).
+    Étape 2 : Lecture du JSON depuis le Bucket Bronze de MinIO,
+    Nettoyage avec Pandas et sauvegarde au format Parquet dans le Bucket Silver.
     """
-    print("Log: Initialisation de la transformation (Bronze -> Silver)...")
+    print("Log: Initialisation de la transformation (MinIO Bronze -> MinIO Silver)...")
     
-    # 1. Récupération du chemin du fichier Bronze d'aujourd'hui
+    # Récupération de la date du jour pour cibler le bon partitionnement
     today = datetime.now().strftime("%Y/%m/%d")
-    bronze_file = f"crypto-bronze/{today}/raw.json"
+    bucket_bronze = "crypto-bronze"
+    object_bronze = f"{today}/raw.json"
     
-    # Vérification si le fichier source existe
-    if not os.path.exists(bronze_file):
-        print(f"Erreur: Le fichier Bronze du jour ({bronze_file}) est introuvable. Lancez d'abord l'ingestion.")
-        return False
-        
+    # Initialisation du client de stockage MinIO
+    s3_client = get_minio_client()
+    
     try:
-        # 2. Chargement des données JSON brutes dans un DataFrame Pandas
-        df = pd.read_json(bronze_file)
-        print(f"Log: Fichier Bronze chargé. Nombre de lignes initiales : {len(df)}")
+        # 1. Lecture du fichier brut directement depuis le Data Lake MinIO
+        response = s3_client.get_object(Bucket=bucket_bronze, Key=object_bronze)
+        json_data = response['Body'].read().decode('utf-8')
         
-        # 3. Sélection stricte des colonnes demandées dans le brief du projet
+        # 2. Chargement des données JSON brutes dans un DataFrame Pandas
+        df = pd.read_json(io.StringIO(json_data))
+        print(f"Log: Fichier Bronze chargé depuis MinIO. Lignes initiales : {len(df)}")
+        
+        # 3. Sélection et filtrage des 12 colonnes essentielles requises par le brief
         columns_to_keep = [
             'id', 'symbol', 'name', 'market_cap_rank',
             'current_price', 'market_cap', 'total_volume',
@@ -32,39 +42,36 @@ def transform_bronze_to_silver():
         ]
         df = df[columns_to_keep]
         
-        # 4. Nettoyage : Suppression des lignes où le prix ou la capitalisation est nulle/NaN
+        # 4. Nettoyage : Suppression des lignes ayant des valeurs manquantes critiques
         df = df.dropna(subset=['current_price', 'market_cap'])
         
-        # 5. Normalisation : Rendre les formats propres (snake_case et strings en minuscules)
+        # 5. Normalisation des formats textuels et conversion temporelle
         df['id'] = df['id'].str.lower().str.strip()
         df['symbol'] = df['symbol'].str.lower().str.strip()
-        
-        # Conversion de la colonne date en type datetime propre
         df['last_updated'] = pd.to_datetime(df['last_updated'])
         
-        # Ajout d'une colonne technique d'audit pour tracer le moment du traitement
+        # 6. Audit des données : Ajout d'un horodatage technique de traitement
         df['processed_at'] = datetime.now()
         
-        # 6. Stockage dans la couche Silver au format Parquet
-        silver_folder = f"crypto-silver/{today}"
-        os.makedirs(silver_folder, exist_ok=True)
+        # 7. Conversion du DataFrame en flux de Bytes au format Parquet (sans écriture disque local)
+        parquet_buffer = io.BytesIO()
+        df.to_parquet(parquet_buffer, index=False, engine='pyarrow')
+        parquet_bytes = parquet_buffer.getvalue()
         
-        silver_file_path = os.path.join(silver_folder, "cleaned_crypto.parquet")
+        # 8. Chargement et stockage du résultat dans la couche Silver de MinIO
+        bucket_silver = "crypto-silver"
+        object_silver = f"{today}/cleaned_crypto.parquet"
         
-        # Sauvegarde en Parquet avec PyArrow comme moteur
-        df.to_parquet(silver_file_path, index=False, engine='pyarrow')
-        
-        print(f"Log: Transformation réussie ! Données nettoyées sauvegardées dans : {silver_file_path}")
-        print(f"Log: Nombre de lignes finales dans Silver : {len(df)}")
-        return True
+        success = upload_bytes_to_minio(bucket_silver, object_silver, parquet_bytes)
+        return success
         
     except Exception as e:
-        print(f"Une erreur est survenue lors de la transformation Silver : {e}")
+        print(f"Erreur critique lors de la transformation Silver : {e}")
         return False
 
 if __name__ == "__main__":
     success = transform_bronze_to_silver()
     if success:
-        print("Étape 2 terminée avec succès.")
+        print("Succès : L'étape 2 (Silver) s'est terminée correctement.")
     else:
-        print("Étape 2 échouée. Vérifiez les logs.")
+        print("Échec : L'étape 2 (Silver) a rencontré une erreur.")

@@ -1,0 +1,64 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: crypto_minio
+    ports:
+      - "9000:9000"       
+      - "9001:9001"       
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadminpassword
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+  postgres:
+    image: postgres:13
+    container_name: crypto_postgres
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  airflow-init:
+    image: apache/airflow:2.8.1-python3.11
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+    command: version
+    depends_on:
+      - postgres
+
+  airflow-webserver:
+    image: apache/airflow:2.8.1-python3.11
+    container_name: crypto_airflow_webserver
+    ports:
+      - "8080:8080"       
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - /home/you-jazou/crypto_big_data_pipeline:/opt/airflow/project
+    command: webserver
+    depends_on:
+      - postgres
+
+  airflow-scheduler:
+    image: apache/airflow:2.8.1-python3.11
+    container_name: crypto_airflow_scheduler
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - /home/you-jazou/crypto_big_data_pipeline:/opt/airflow/project
+    command: scheduler
+    depends_on:
+      - postgres
+
+volumes:
+  minio_data:
+  postgres_data:

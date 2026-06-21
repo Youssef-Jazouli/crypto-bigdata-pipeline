@@ -1,15 +1,19 @@
+import os
+import sys
 import requests
 import json
-import os
 from datetime import datetime
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.minio_client import upload_bytes_to_minio
 
 def extract_and_save_bronze():
     """
-    Étape 1 : Extraction des données depuis l'API CoinGecko 
-    et stockage au format JSON brut dans la couche Bronze du Data Lake.
+    Étape 1 : Extraction depuis CoinGecko API 
+    et stockage au format JSON brut dans le Data Lake MinIO (Couche Bronze).
     """
     url = "https://api.coingecko.com/api/v3/coins/markets"
-    
     params = {
         "vs_currency": "usd",           
         "order": "market_cap_desc",     
@@ -24,19 +28,19 @@ def extract_and_save_bronze():
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         raw_data = response.json()
-        print(f"Log: Extraction réussie ! {len(raw_data)} cryptomonnaies récupérées.")
         
+        # Transformation des données en format bytes JSON
+        json_str = json.dumps(raw_data, ensure_ascii=False, indent=4)
+        json_bytes = json_str.encode('utf-8')
+        
+        # Partitionnement temporel pour le chemin de l'objet
         today = datetime.now().strftime("%Y/%m/%d")
-        bronze_folder = f"crypto-bronze/{today}"
+        bucket_name = "crypto-bronze"
+        object_name = f"{today}/raw.json"
         
-        os.makedirs(bronze_folder, exist_ok=True)
-        file_path = os.path.join(bronze_folder, "raw.json")
-        
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(raw_data, f, ensure_ascii=False, indent=4)
-            
-        print(f"Log: Données brutes sauvegardées avec succès dans : {file_path}")
-        return True
+        # Envoi direct vers MinIO
+        success = upload_bytes_to_minio(bucket_name, object_name, json_bytes)
+        return success
 
     except Exception as e:
         print(f"Une erreur est survenue lors de l'extraction : {e}")
