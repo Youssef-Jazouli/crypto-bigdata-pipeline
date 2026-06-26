@@ -4,47 +4,59 @@ import requests
 import json
 from datetime import datetime
 
+# Configuration du chemin pour l'importation des modules utilitaires
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.minio_client import get_minio_client
 
-from utils.minio_client import upload_bytes_to_minio
-
-def extract_and_save_bronze():
-    """
-    Étape 1 : Extraction depuis CoinGecko API 
-    et stockage au format JSON brut dans le Data Lake MinIO (Couche Bronze).
-    """
+def ingest_to_bronze():
+    print("Log: Initialisation de l'ingestion Bronze (CoinGecko -> MinIO)...")
+    
+    # Récupération dynamique de la date passée par Airflow (sys.argv[1])
+    # Si le script est lancé manuellement sans argument, on prend la date du jour
+    if len(sys.argv) > 1:
+        date_path = sys.argv[1] # Format reçu : YYYY/MM/DD
+    else:
+        date_path = datetime.now().strftime("%Y/%m/%d")
+        
+    print(f"Log: Traitement en cours pour la date d'exécution : {date_path}")
+    
+    # URL de l'API CoinGecko pour récupérer le Top 10 des cryptomonnaies
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
-        "vs_currency": "usd",           
-        "order": "market_cap_desc",     
-        "per_page": 50,                 
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": 10,
         "page": 1,
-        "sparkline": False
+        "sparkline": "false"
     }
     
-    print("Log: Initialisation de l'extraction depuis CoinGecko API...")
-    
     try:
-        response = requests.get(url, params=params, timeout=10)
+        # Envoi de la requête à l'API
+        response = requests.get(url, params=params)
         response.raise_for_status()
-        raw_data = response.json()
+        data = response.json()
         
-        # Transformation des données en format bytes JSON
-        json_str = json.dumps(raw_data, ensure_ascii=False, indent=4)
-        json_bytes = json_str.encode('utf-8')
-        
-        # Partitionnement temporel pour le chemin de l'objet
-        today = datetime.now().strftime("%Y/%m/%d")
+        # Sauvegarde locale temporaire du fichier JSON
+        local_filename = "raw.json"
+        with open(local_filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+            
+        # Connexion au client MinIO et téléversement dans le bon dossier historique
+        s3_client = get_minio_client()
         bucket_name = "crypto-bronze"
-        object_name = f"{today}/raw.json"
+        object_key = f"{date_path}/raw.json"
         
-        # Envoi direct vers MinIO
-        success = upload_bytes_to_minio(bucket_name, object_name, json_bytes)
-        return success
-
+        s3_client.upload_file(local_filename, bucket_name, object_key)
+        print(f"Log: Données brutes injectées avec succès dans MinIO -> {bucket_name}/{object_key}")
+        
+        # Nettoyage du fichier temporaire local
+        if os.path.exists(local_filename):
+            os.remove(local_filename)
+            
+        return True
     except Exception as e:
-        print(f"Une erreur est survenue lors de l'extraction : {e}")
+        print(f"Erreur critique lors de l'ingestion Bronze : {e}")
         return False
 
 if __name__ == "__main__":
-    extract_and_save_bronze()
+    ingest_to_bronze()
